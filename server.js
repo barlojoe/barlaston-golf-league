@@ -1,0 +1,353 @@
+// Barlaston Golf League — zero-dependency Node.js server
+// No npm install required. Works fully offline. Persists to data.json.
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+
+const PORT = 3000;
+const DATA_FILE = path.join(__dirname, 'data.json');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+// ---- Default course: Barlaston Golf Club, 18 holes, par 69 (White tees) ----
+// Pars and stroke index are a sensible par-69 layout — every value is editable
+// in the app, so match it to your physical scorecard in seconds.
+const DEFAULT_COURSE = {
+  name: 'Barlaston Golf Club',
+  par: 69,
+  holes: [
+    { hole: 1,  par: 4, si: 5  },
+    { hole: 2,  par: 4, si: 11 },
+    { hole: 3,  par: 3, si: 17 },
+    { hole: 4,  par: 5, si: 1  },
+    { hole: 5,  par: 4, si: 7  },
+    { hole: 6,  par: 4, si: 13 },
+    { hole: 7,  par: 3, si: 15 },
+    { hole: 8,  par: 4, si: 3  },
+    { hole: 9,  par: 4, si: 9  },
+    { hole: 10, par: 4, si: 6  },
+    { hole: 11, par: 4, si: 12 },
+    { hole: 12, par: 3, si: 18 },
+    { hole: 13, par: 4, si: 2  },
+    { hole: 14, par: 4, si: 8  },
+    { hole: 15, par: 4, si: 14 },
+    { hole: 16, par: 3, si: 16 },
+    { hole: 17, par: 4, si: 4  },
+    { hole: 18, par: 4, si: 10 },
+  ],
+};
+
+// ---- League scoring config ----
+const DEFAULT_CONFIG = {
+  stakePerWeek: 3,        // £ per player per week
+  totalRounds: 20,        // season length
+  season: '2026',
+  bonus: {
+    perBirdie: 1,         // bonus pts per birdie
+    perEagle: 2,          // bonus pts per eagle (on top of stableford)
+    winWeek: 5,           // weekly winner
+    secondWeek: 2,        // weekly runner-up
+  },
+};
+
+function defaultData() {
+  return {
+    config: DEFAULT_CONFIG,
+    course: DEFAULT_COURSE,
+    players: [],   // { id, name, handicap }
+    rounds: [],    // { id, week, date, scores: { playerId: [h1..h18] } }
+  };
+}
+
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('Could not read data.json, starting fresh:', e.message);
+  }
+  const d = defaultData();
+  saveData(d);
+  return d;
+}
+
+function saveData(d) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(d, null, 2));
+}
+
+let data = loadData();
+
+// ---- Scoring engine ----
+
+// Net strokes received on a hole for a given handicap, by stroke index.
+function strokesOnHole(handicap, si) {
+  const h = Math.round(handicap);
+  let s = Math.floor(h / 18);
+  if (si <= (h % 18)) s += 1;
+  return s;
+}
+
+// Stableford points for one hole (net).
+function stablefordPoints(gross, par, strokesReceived) {
+  if (gross == null || gross === 0) return 0;
+  const net = gross - strokesReceived;
+  const diff = net - par; // 0 = net par
+  const pts = 2 - diff;   // net par = 2, net birdie = 3, net bogey = 1...
+  return Math.max(0, pts);
+}
+
+// Count gross birdies / eagles for bonus points (gross, not net).
+function countSpecials(grossArr, holes) {
+  let birdies = 0, eagles = 0;
+  for (let i = 0; i < holes.length; i++) {
+    const g = grossArr[i];
+    if (g == null || g === 0) continue;
+    const toPar = g - holes[i].par;
+    if (toPar <= -2) eagles += 1;
+    else if (toPar === -1) birdies += 1;
+  }
+  return { birdies, eagles };
+}
+
+// Compute one player's result for one round.
+function scoreRound(round, player, course, config) {
+  const holes = course.holes;
+  const grossArr = (round.scores && round.scores[player.id]) || [];
+  let stableford = 0;
+  let grossTotal = 0;
+  let holesPlayed = 0;
+  for (let i = 0; i < holes.length; i++) {
+    const g = grossArr[i];
+    if (g == null || g === 0) continue;
+    holesPlayed += 1;
+    grossTotal += g;
+    const recv = strokesOnHole(player.handicap, holes[i].si);
+    stableford += stablefordPoints(g, holes[i].par, recv);
+  }
+  const { birdies, eagles } = countSpecials(grossArr, holes);
+  const bonusSpecials = birdies * config.bonus.perBirdie + eagles * config.bonus.perEagle;
+  return {
+    playerId: player.id,
+    holesPlayed,
+    grossTotal,
+    stableford,
+    birdies,
+    eagles,
+    bonusSpecials,
+    // placement bonus filled in later (needs whole field)
+    placementBonus: 0,
+    weeklyRank: null,
+    weeklyTotal: stableford + bonusSpecials,
+  };
+}
+
+// Full season standings.
+function computeStandings() {
+  const { course, config, players, rounds } = data;
+  const totals = {};
+  players.forEach(p => {
+    totals[p.id] = {
+      playerId: p.id, name: p.name, handicap: p.handicap,
+      points: 0, stableford: 0, bonus: 0,
+      birdies: 0, eagles: 0, weeksPlayed: 0,
+      weeklyWins: 0, grossTotal: 0, holesPlayed: 0,
+    };
+  });
+
+  const weekly = [];
+
+  rounds.forEach(round => {
+    // score everyone who has any holes this round
+    const results = players
+      .map(p => scoreRound(round, p, course, config))
+      .filter(r => r.holesPlayed > 0);
+
+    // rank by weekly total (stableford + specials) desc
+    const ranked = [...results].sort((a, b) => b.weeklyTotal - a.weeklyTotal);
+    ranked.forEach((r, idx) => {
+      r.weeklyRank = idx + 1;
+      if (idx === 0) r.placementBonus = config.bonus.winWeek;
+      else if (idx === 1) r.placementBonus = config.bonus.secondWeek;
+      r.weeklyTotal += r.placementBonus;
+    });
+
+    weekly.push({ week: round.week, date: round.date, roundId: round.id, results: ranked });
+
+    ranked.forEach(r => {
+      const t = totals[r.playerId];
+      if (!t) return;
+      t.stableford += r.stableford;
+      t.bonus += r.bonusSpecials + r.placementBonus;
+      t.points += r.weeklyTotal;
+      t.birdies += r.birdies;
+      t.eagles += r.eagles;
+      t.grossTotal += r.grossTotal;
+      t.holesPlayed += r.holesPlayed;
+      t.weeksPlayed += 1;
+      if (r.weeklyRank === 1) t.weeklyWins += 1;
+    });
+  });
+
+  const standings = Object.values(totals).sort((a, b) => b.points - a.points);
+  standings.forEach((s, i) => { s.rank = i + 1; });
+
+  // pot
+  const weeksWithPlay = new Set(rounds.filter(r =>
+    players.some(p => scoreRound(r, p, course, config).holesPlayed > 0)
+  ).map(r => r.id)).size;
+  const pot = {
+    stakePerWeek: config.stakePerWeek,
+    playerCount: players.length,
+    weeksPlayed: weeksWithPlay,
+    weeklyPot: config.stakePerWeek * players.length,
+    currentPot: config.stakePerWeek * players.length * weeksWithPlay,
+    projectedPot: config.stakePerWeek * players.length * config.totalRounds,
+  };
+
+  return { standings, weekly, pot };
+}
+
+// ---- HTTP helpers ----
+function sendJSON(res, obj, code = 200) {
+  const body = JSON.stringify(obj);
+  res.writeHead(code, { 'Content-Type': 'application/json' });
+  res.end(body);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let b = '';
+    req.on('data', c => { b += c; });
+    req.on('end', () => {
+      try { resolve(b ? JSON.parse(b) : {}); }
+      catch (e) { reject(e); }
+    });
+  });
+}
+
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+
+const MIME = {
+  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
+  '.json': 'application/json', '.svg': 'image/svg+xml',
+};
+
+function serveStatic(res, urlPath) {
+  let file = urlPath === '/' ? '/index.html' : urlPath;
+  const full = path.join(PUBLIC_DIR, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
+  if (!full.startsWith(PUBLIC_DIR)) { res.writeHead(403); res.end('Forbidden'); return; }
+  fs.readFile(full, (err, buf) => {
+    if (err) { res.writeHead(404); res.end('Not found'); return; }
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream' });
+    res.end(buf);
+  });
+}
+
+// ---- Router ----
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  const p = url.pathname;
+
+  // API
+  if (p.startsWith('/api/')) {
+    try {
+      // STATE — everything the frontend needs
+      if (p === '/api/state' && req.method === 'GET') {
+        return sendJSON(res, { ...data, ...computeStandings() });
+      }
+
+      // CONFIG
+      if (p === '/api/config' && req.method === 'POST') {
+        const body = await readBody(req);
+        data.config = { ...data.config, ...body, bonus: { ...data.config.bonus, ...(body.bonus || {}) } };
+        saveData(data);
+        return sendJSON(res, { ok: true, config: data.config });
+      }
+
+      // COURSE
+      if (p === '/api/course' && req.method === 'POST') {
+        const body = await readBody(req);
+        data.course = { ...data.course, ...body };
+        saveData(data);
+        return sendJSON(res, { ok: true, course: data.course });
+      }
+
+      // PLAYERS
+      if (p === '/api/players' && req.method === 'POST') {
+        const body = await readBody(req);
+        const player = { id: uid(), name: body.name || 'Player', handicap: Number(body.handicap) || 0 };
+        data.players.push(player);
+        saveData(data);
+        return sendJSON(res, { ok: true, player });
+      }
+      if (p.match(/^\/api\/players\/[^/]+$/) && req.method === 'PUT') {
+        const id = p.split('/').pop();
+        const body = await readBody(req);
+        const pl = data.players.find(x => x.id === id);
+        if (!pl) return sendJSON(res, { error: 'not found' }, 404);
+        if (body.name != null) pl.name = body.name;
+        if (body.handicap != null) pl.handicap = Number(body.handicap);
+        saveData(data);
+        return sendJSON(res, { ok: true, player: pl });
+      }
+      if (p.match(/^\/api\/players\/[^/]+$/) && req.method === 'DELETE') {
+        const id = p.split('/').pop();
+        data.players = data.players.filter(x => x.id !== id);
+        data.rounds.forEach(r => { if (r.scores) delete r.scores[id]; });
+        saveData(data);
+        return sendJSON(res, { ok: true });
+      }
+
+      // ROUNDS
+      if (p === '/api/rounds' && req.method === 'POST') {
+        const body = await readBody(req);
+        const week = body.week || (data.rounds.length + 1);
+        const round = { id: uid(), week, date: body.date || '', scores: {} };
+        data.rounds.push(round);
+        saveData(data);
+        return sendJSON(res, { ok: true, round });
+      }
+      // save a player's hole-by-hole card for a round
+      if (p.match(/^\/api\/rounds\/[^/]+\/scores$/) && req.method === 'POST') {
+        const id = p.split('/')[3];
+        const body = await readBody(req); // { playerId, holes: [..18] }
+        const round = data.rounds.find(r => r.id === id);
+        if (!round) return sendJSON(res, { error: 'not found' }, 404);
+        if (!round.scores) round.scores = {};
+        round.scores[body.playerId] = body.holes.map(h => (h === '' || h == null) ? null : Number(h));
+        if (body.date != null) round.date = body.date;
+        saveData(data);
+        return sendJSON(res, { ok: true });
+      }
+      if (p.match(/^\/api\/rounds\/[^/]+$/) && req.method === 'DELETE') {
+        const id = p.split('/').pop();
+        data.rounds = data.rounds.filter(r => r.id !== id);
+        saveData(data);
+        return sendJSON(res, { ok: true });
+      }
+
+      // RESET
+      if (p === '/api/reset' && req.method === 'POST') {
+        data = defaultData();
+        saveData(data);
+        return sendJSON(res, { ok: true });
+      }
+
+      return sendJSON(res, { error: 'unknown endpoint' }, 404);
+    } catch (e) {
+      return sendJSON(res, { error: e.message }, 500);
+    }
+  }
+
+  // Static
+  serveStatic(res, p);
+});
+
+server.listen(PORT, () => {
+  console.log('');
+  console.log('  ⛳  Barlaston Golf League is running');
+  console.log('  →  Open your browser at:  http://localhost:' + PORT);
+  console.log('  →  Press Ctrl+C to stop.');
+  console.log('');
+});
