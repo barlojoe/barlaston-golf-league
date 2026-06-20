@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Barlaston Golf League</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="bg-grain"></div>
+
+<header class="masthead">
+  <div class="crest">⛳</div>
+  <div class="masthead-text">
+    <p class="eyebrow">Established 2026 · Members' Midweek League</p>
+    <h1>Barlaston Golf Club</h1>
+    <p class="subtitle">Season Championship · Stableford & Honours</p>
+  </div>
+  <div class="crest">🏆</div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="leaderboard">Leaderboard</button>
+  <button class="tab" data-tab="enter">Enter Scores</button>
+  <button class="tab" data-tab="players">Players</button>
+  <button class="tab" data-tab="course">Course</button>
+  <button class="tab" data-tab="settings">Settings</button>
+</nav>
+
+<main>
+  <!-- LEADERBOARD -->
+  <section id="leaderboard" class="panel active">
+    <div class="pot-strip">
+      <div class="pot-card">
+        <span class="pot-label">Current Pot</span>
+        <span class="pot-value" id="pot-current">£0</span>
+      </div>
+      <div class="pot-card">
+        <span class="pot-label">Per Week</span>
+        <span class="pot-value" id="pot-weekly">£0</span>
+      </div>
+      <div class="pot-card">
+        <span class="pot-label">Weeks Played</span>
+        <span class="pot-value" id="pot-weeks">0</span>
+      </div>
+      <div class="pot-card highlight">
+        <span class="pot-label">Season Prize (Projected)</span>
+        <span class="pot-value" id="pot-projected">£0</span>
+      </div>
+    </div>
+
+    <div class="board">
+      <div class="board-header">
+        <h2>The Honours Board</h2>
+        <p class="board-sub">Season standings · winner takes the pot</p>
+      </div>
+      <table class="standings" id="standings-table">
+        <thead>
+          <tr>
+            <th class="col-rank">#</th>
+            <th class="col-name">Player</th>
+            <th>HCP</th>
+            <th>Pld</th>
+            <th>Stblfd</th>
+            <th>Bonus</th>
+            <th title="Birdies">🐦</th>
+            <th title="Eagles">🦅</th>
+            <th title="Weekly wins">Wins</th>
+            <th class="col-pts">Points</th>
+          </tr>
+        </thead>
+        <tbody id="standings-body"></tbody>
+      </table>
+      <p class="empty-note" id="standings-empty">Add players and enter a round to begin the season.</p>
+    </div>
+
+    <div class="board weekly-board" id="weekly-section">
+      <div class="board-header"><h2>Weekly Results</h2></div>
+      <div id="weekly-list"></div>
+    </div>
+  </section>
+
+  <!-- ENTER SCORES -->
+  <section id="enter" class="panel">
+    <div class="card">
+      <div class="row-between">
+        <h2>Enter a Round</h2>
+        <div class="round-controls">
+          <select id="round-select"></select>
+          <button class="btn ghost" id="new-round-btn">+ New Round</button>
+          <button class="btn danger-ghost" id="delete-round-btn">Delete Round</button>
+        </div>
+      </div>
+      <div class="round-meta">
+        <label>Week
+          <input type="number" id="round-week" min="1">
+        </label>
+        <label>Date
+          <input type="date" id="round-date">
+        </label>
+      </div>
+
+      <div class="scorecard-wrap" id="scorecard-wrap">
+        <p class="empty-note">Create a round to start entering scores.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- PLAYERS -->
+  <section id="players" class="panel">
+    <div class="card">
+      <h2>Players</h2>
+      <div class="add-player">
+        <input type="text" id="player-name" placeholder="Player name">
+        <input type="number" id="player-hcp" placeholder="Handicap" step="0.1">
+        <button class="btn" id="add-player-btn">Add Player</button>
+      </div>
+      <table class="simple-table" id="players-table">
+        <thead><tr><th>Name</th><th>Handicap</th><th></th></tr></thead>
+        <tbody id="players-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- COURSE -->
+  <section id="course" class="panel">
+    <div class="card">
+      <div class="row-between">
+        <h2>Course Card</h2>
+        <button class="btn" id="save-course-btn">Save Course</button>
+      </div>
+      <p class="hint">Pre-filled with a par-69 Barlaston layout. Edit any par or stroke index to match your physical scorecard, then Save.</p>
+      <label class="inline-field">Course name <input type="text" id="course-name"></label>
+      <table class="course-table" id="course-table">
+        <thead><tr><th>Hole</th><th>Par</th><th>Stroke Index</th></tr></thead>
+        <tbody id="course-body"></tbody>
+        <tfoot><tr><th>Total Par</th><th id="course-par-total">—</th><th></th></tr></tfoot>
+      </table>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="settings" class="panel">
+    <div class="card">
+      <div class="row-between"><h2>League Settings</h2><button class="btn" id="save-config-btn">Save Settings</button></div>
+      <div class="settings-grid">
+        <label>Stake per player / week (£)<input type="number" id="cfg-stake" step="0.5"></label>
+        <label>Total rounds (season)<input type="number" id="cfg-rounds" min="1"></label>
+        <label>Season label<input type="text" id="cfg-season"></label>
+      </div>
+      <h3>Bonus Points</h3>
+      <div class="settings-grid">
+        <label>Per birdie<input type="number" id="cfg-birdie"></label>
+        <label>Per eagle<input type="number" id="cfg-eagle"></label>
+        <label>Win the week<input type="number" id="cfg-win"></label>
+        <label>2nd the week<input type="number" id="cfg-second"></label>
+      </div>
+      <div class="danger-zone">
+        <h3>Danger Zone</h3>
+        <button class="btn danger" id="reset-btn">Reset Entire Season</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">Barlaston Golf League · runs entirely on your machine · data saved locally</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
